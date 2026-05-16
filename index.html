@@ -545,6 +545,34 @@
     <div id="root"></div>
 
     <script src="STGT_CPM_data.js"></script>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        // Import Firebase modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+        import { getDatabase, ref, set, get, onValue, remove, update } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-database.js";
+
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyA64HB1kLHTrsEQ3hGCa6cuDl5HVJzWpnM",
+            authDomain: "cpm-ins-app.firebaseapp.com",
+            databaseURL: "https://cpm-ins-app-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "cpm-ins-app",
+            storageBucket: "cpm-ins-app.firebasestorage.app",
+            messagingSenderId: "286686990966",
+            appId: "1:286686990966:web:16d4dafe0c5b2f25ff0557",
+            measurementId: "G-GZJKVEX6Z3"
+        };
+
+        // Initialize Firebase
+        const firebaseApp = initializeApp(firebaseConfig);
+        const database = getDatabase(firebaseApp);
+
+        // Export for use in main script
+        window.firebaseDB = { database, ref, set, get, onValue, remove, update };
+        window.firebaseReady = true;
+    </script>
+
     <script>
         // ==========================================
         // INITIAL DATA - Load from external file
@@ -591,80 +619,234 @@
 
         let allUsers = [];
 
-        function loadUsers() {
+        async function loadUsers() {
             try {
-                const data = localStorage.getItem(USERS_KEY);
-                if (data) {
-                    allUsers = JSON.parse(data);
+                if (!window.firebaseReady) {
+                    // Fallback to localStorage if Firebase not ready
+                    const data = localStorage.getItem(USERS_KEY);
+                    if (data) {
+                        allUsers = JSON.parse(data);
+                    } else {
+                        allUsers = JSON.parse(JSON.stringify(DEFAULT_USERS));
+                        saveUsers();
+                    }
+                    return;
+                }
+
+                const db = window.firebaseDB.database;
+                const usersRef = window.firebaseDB.ref(db, 'users');
+                const snapshot = await window.firebaseDB.get(usersRef);
+
+                if (snapshot.exists()) {
+                    allUsers = Object.values(snapshot.val());
                 } else {
                     allUsers = JSON.parse(JSON.stringify(DEFAULT_USERS));
-                    saveUsers();
+                    await saveUsers();
                 }
+
+                // Set up real-time listener
+                window.firebaseDB.onValue(usersRef, (snapshot) => {
+                    if (snapshot.exists()) {
+                        allUsers = Object.values(snapshot.val());
+                        console.log('Users synced from Firebase:', allUsers);
+                    }
+                });
             } catch (e) {
+                console.error('Error loading users:', e);
                 allUsers = JSON.parse(JSON.stringify(DEFAULT_USERS));
                 saveUsers();
             }
         }
 
-        function saveUsers() {
-            localStorage.setItem(USERS_KEY, JSON.stringify(allUsers));
+        async function saveUsers() {
+            try {
+                if (!window.firebaseReady) {
+                    localStorage.setItem(USERS_KEY, JSON.stringify(allUsers));
+                    return;
+                }
+
+                const db = window.firebaseDB.database;
+                const usersRef = window.firebaseDB.ref(db, 'users');
+                const usersObj = {};
+                allUsers.forEach((user, idx) => {
+                    usersObj[user.id || `user_${idx}`] = user;
+                });
+                await window.firebaseDB.set(usersRef, usersObj);
+                console.log('Users saved to Firebase');
+            } catch (e) {
+                console.error('Error saving users:', e);
+                localStorage.setItem(USERS_KEY, JSON.stringify(allUsers));
+            }
         }
 
-        function loadFromStorage() {
+        async function loadFromStorage() {
             try {
-                const data = localStorage.getItem(STORAGE_KEY);
-                if (data) {
-                    items = JSON.parse(data);
-                } else {
-                    // Load from external data file
-                    items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
-                    saveToStorage();
+                if (!window.firebaseReady) {
+                    // Fallback to localStorage
+                    const data = localStorage.getItem(STORAGE_KEY);
+                    if (data) {
+                        items = JSON.parse(data);
+                    } else {
+                        items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
+                        saveToStorage();
+                    }
+
+                    try {
+                        const pending = localStorage.getItem(PENDING_KEY);
+                        pendingActions = pending ? JSON.parse(pending) : [];
+                    } catch (e) {
+                        pendingActions = [];
+                    }
+
+                    try {
+                        const history = localStorage.getItem(HISTORY_KEY);
+                        actionHistory = history ? JSON.parse(history) : [];
+                    } catch (e) {
+                        actionHistory = [];
+                    }
+                    return;
                 }
+
+                const db = window.firebaseDB.database;
+
+                // Load vehicle data
+                const itemsRef = window.firebaseDB.ref(db, 'vehicles');
+                const itemsSnapshot = await window.firebaseDB.get(itemsRef);
+                if (itemsSnapshot.exists()) {
+                    items = Object.values(itemsSnapshot.val());
+                } else {
+                    items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
+                    await saveToStorage();
+                }
+
+                // Load pending actions
+                const pendingRef = window.firebaseDB.ref(db, 'pendingActions');
+                const pendingSnapshot = await window.firebaseDB.get(pendingRef);
+                pendingActions = pendingSnapshot.exists() ? Object.values(pendingSnapshot.val()) : [];
+
+                // Load action history
+                const historyRef = window.firebaseDB.ref(db, 'actionHistory');
+                const historySnapshot = await window.firebaseDB.get(historyRef);
+                actionHistory = historySnapshot.exists() ? Object.values(historySnapshot.val()) : [];
+
+                // Set up real-time listeners
+                window.firebaseDB.onValue(itemsRef, (snapshot) => {
+                    if (snapshot.exists()) {
+                        items = Object.values(snapshot.val());
+                        console.log('Vehicle data synced from Firebase');
+                        renderVehicleList();
+                    }
+                });
+
+                window.firebaseDB.onValue(pendingRef, (snapshot) => {
+                    pendingActions = snapshot.exists() ? Object.values(snapshot.val()) : [];
+                    console.log('Pending actions synced from Firebase');
+                });
+
+                window.firebaseDB.onValue(historyRef, (snapshot) => {
+                    actionHistory = snapshot.exists() ? Object.values(snapshot.val()) : [];
+                    console.log('Action history synced from Firebase');
+                });
+
             } catch (e) {
+                console.error('Error loading from storage:', e);
                 items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
+                pendingActions = [];
+                actionHistory = [];
                 saveToStorage();
             }
-
-            try {
-                const pending = localStorage.getItem(PENDING_KEY);
-                pendingActions = pending ? JSON.parse(pending) : [];
-            } catch (e) {
-                pendingActions = [];
-            }
-
-            try {
-                const history = localStorage.getItem(HISTORY_KEY);
-                actionHistory = history ? JSON.parse(history) : [];
-            } catch (e) {
-                actionHistory = [];
-            }
         }
 
-        function resetAllData() {
-            if (!confirm('⚠️ คำเตือน: การ Reset จะลบข้อมูลทั้งหมดใน localStorage และโหลดข้อมูลต้นฉบับจากไฟล์ใหม่\n\nคุณแน่ใจหรือไม่?')) {
+        async function resetAllData() {
+            if (!confirm('⚠️ คำเตือน: การ Reset จะลบข้อมูลทั้งหมดใน Firebase และโหลดข้อมูลต้นฉบับจากไฟล์ใหม่\n\nคุณแน่ใจหรือไม่?')) {
                 return;
             }
-            localStorage.removeItem(STORAGE_KEY);
-            localStorage.removeItem(PENDING_KEY);
-            localStorage.removeItem(HISTORY_KEY);
-            items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
-            pendingActions = [];
-            actionHistory = [];
-            saveToStorage();
-            alert('✅ Reset สำเร็จ! ข้อมูลถูกลบและโหลดใหม่จากไฟล์ต้นฉบับ');
-            renderVehicleList();
+
+            try {
+                if (window.firebaseReady) {
+                    const db = window.firebaseDB.database;
+                    await window.firebaseDB.remove(window.firebaseDB.ref(db, 'vehicles'));
+                    await window.firebaseDB.remove(window.firebaseDB.ref(db, 'pendingActions'));
+                    await window.firebaseDB.remove(window.firebaseDB.ref(db, 'actionHistory'));
+                } else {
+                    localStorage.removeItem(STORAGE_KEY);
+                    localStorage.removeItem(PENDING_KEY);
+                    localStorage.removeItem(HISTORY_KEY);
+                }
+
+                items = (typeof stgtCpmData !== 'undefined') ? JSON.parse(JSON.stringify(stgtCpmData)) : [];
+                pendingActions = [];
+                actionHistory = [];
+                await saveToStorage();
+                alert('✅ Reset สำเร็จ! ข้อมูลถูกลบและโหลดใหม่จากไฟล์ต้นฉบับ');
+                renderVehicleList();
+            } catch (e) {
+                console.error('Error resetting data:', e);
+                alert('❌ เกิดข้อผิดพลาดในการ Reset ข้อมูล');
+            }
         }
 
-        function saveToStorage() {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+        async function saveToStorage() {
+            try {
+                if (!window.firebaseReady) {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+                    return;
+                }
+
+                const db = window.firebaseDB.database;
+                const itemsRef = window.firebaseDB.ref(db, 'vehicles');
+                const itemsObj = {};
+                items.forEach((item, idx) => {
+                    itemsObj[item.Id || item.id || `item_${idx}`] = item;
+                });
+                await window.firebaseDB.set(itemsRef, itemsObj);
+                console.log('Vehicle data saved to Firebase');
+            } catch (e) {
+                console.error('Error saving to storage:', e);
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+            }
         }
 
-        function savePending() {
-            localStorage.setItem(PENDING_KEY, JSON.stringify(pendingActions));
+        async function savePending() {
+            try {
+                if (!window.firebaseReady) {
+                    localStorage.setItem(PENDING_KEY, JSON.stringify(pendingActions));
+                    return;
+                }
+
+                const db = window.firebaseDB.database;
+                const pendingRef = window.firebaseDB.ref(db, 'pendingActions');
+                const pendingObj = {};
+                pendingActions.forEach((action, idx) => {
+                    pendingObj[action.id || `action_${idx}`] = action;
+                });
+                await window.firebaseDB.set(pendingRef, pendingObj);
+                console.log('Pending actions saved to Firebase');
+            } catch (e) {
+                console.error('Error saving pending:', e);
+                localStorage.setItem(PENDING_KEY, JSON.stringify(pendingActions));
+            }
         }
 
-        function saveHistory() {
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(actionHistory));
+        async function saveHistory() {
+            try {
+                if (!window.firebaseReady) {
+                    localStorage.setItem(HISTORY_KEY, JSON.stringify(actionHistory));
+                    return;
+                }
+
+                const db = window.firebaseDB.database;
+                const historyRef = window.firebaseDB.ref(db, 'actionHistory');
+                const historyObj = {};
+                actionHistory.forEach((item, idx) => {
+                    historyObj[item.id || `history_${idx}`] = item;
+                });
+                await window.firebaseDB.set(historyRef, historyObj);
+                console.log('Action history saved to Firebase');
+            } catch (e) {
+                console.error('Error saving history:', e);
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(actionHistory));
+            }
         }
 
         // ==========================================
@@ -2146,9 +2328,32 @@
         // ==========================================
         // INIT
         // ==========================================
-        loadUsers();
-        loadFromStorage();
-        renderApp();
+        async function initializeApp() {
+            // Wait for Firebase to be ready (up to 5 seconds)
+            let retries = 0;
+            while (!window.firebaseReady && retries < 50) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                retries++;
+            }
+
+            if (!window.firebaseReady) {
+                console.warn('Firebase not ready, using localStorage fallback');
+            } else {
+                console.log('Firebase initialized successfully');
+            }
+
+            await loadUsers();
+            await loadFromStorage();
+            renderApp();
+        }
+
+        // Start initialization
+        initializeApp().catch(err => {
+            console.error('Initialization error:', err);
+            loadUsers();
+            loadFromStorage();
+            renderApp();
+        });
     </script>
 </body>
 </html>
